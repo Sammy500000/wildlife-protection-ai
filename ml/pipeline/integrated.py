@@ -88,12 +88,29 @@ def extract_track_crops(video: Path, tracks: list[dict[str, Any]], crop_root: Pa
     return dict(out)
 
 
+def _write_evidence_frame(video: Path, tracks: list[dict[str, Any]], output_dir: Path) -> str | None:
+    animals = [r for r in tracks if r.get("class_name") == "animal" and r.get("track_id") is not None]
+    if not animals:
+        return None
+    row = max(animals, key=lambda r: float(r.get("confidence", 0.0)))
+    cap = cv2.VideoCapture(str(video))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, int(row["frame_index"]))
+    ok, frame = cap.read()
+    cap.release()
+    if not ok:
+        return None
+    x1, y1, x2, y2 = [int(v) for v in row["bbox"]]
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
+    evidence = output_dir / "evidence.jpg"
+    cv2.imwrite(str(evidence), frame)
+    return str(evidence)
+
+
 def run_integrated(
     video: Path,
     output_dir: Path,
     sample_every: int = 3,
     species_samples: int = 8,
-    behavior_checkpoint: Path | None = None,
     behavior_checkpoint: str | Path = "models/behavior/videomae/videomae_combined_v1.pt",
 ) -> dict[str, Any]:
     from scripts.run_video import run_video
@@ -104,7 +121,7 @@ def run_integrated(
     tracks = json.loads((video_dir / "tracks.json").read_text(encoding="utf-8")).get("tracks", [])
 
     crop_root = output_dir / "track_crops"
-    crops = extract_track_crops(video, tracks, crop_root, per_track=max(80, species_samples))
+    crops = extract_track_crops(video, tracks, crop_root, per_track=max(16, species_samples))
 
     species_root = output_dir / "species"
     species_root.mkdir(parents=True, exist_ok=True)
@@ -138,19 +155,15 @@ def run_integrated(
     humans_present = any(r.get("class_name") == "person" for r in tracks)
     risk_events = []
     behavior_results: dict[str, dict[str, Any]] = {}
+    evidence_uri = _write_evidence_frame(video, tracks, output_dir)
 
     for tid, info in track_species.items():
-        if tid in crops and len(crops[tid]) > 0:
-            behavior_result = BehaviorMapper.enrich(
-                behavior_model.predict_paths(crops[tid])
-            )
+        if tid in crops and crops[tid]:
+            behavior_result = BehaviorMapper.enrich(behavior_model.predict_paths(crops[tid]))
         else:
             behavior_result = {
-                "behaviour": "Other",
-                "behavior_class": "UNKNOWN",
-                "confidence": 0.0,
-                "frames": 0,
-                "model_version": "VideoMAE-CattleVision-v1",
+                "behaviour": "Other", "behavior_class": "UNKNOWN", "confidence": 0.0,
+                "frames": 0, "model_version": "VideoMAE-CattleVision-v1",
                 "reason": "no_track_crops",
             }
         behavior_results[tid] = behavior_result
@@ -162,7 +175,7 @@ def run_integrated(
             human_present=humans_present,
             distance_m=None,
             persistence_s=0.0,
-            detector_confidence=float(summary.get("detector_confidence", 1.0)),
+            detector_confidence=1.0,
             behaviour_confidence=float(behavior_result["confidence"]),
             confidence=evidence_conf,
         ))
@@ -174,7 +187,7 @@ def run_integrated(
             "behaviour_confidence": behavior_result["confidence"],
             "human_present": humans_present,
             "risk": risk,
-            "evidence_uri": None,
+            "evidence_uri": evidence_uri,
         })
 
     result = {
@@ -188,11 +201,14 @@ def run_integrated(
             "tracker": "ByteTrack",
             "species": "SpeciesNet 5.x",
             "behavior": "VideoMAE-CattleVision-v1",
+            "device": "cpu",
         },
         "outputs": {
+            "annotated_video": str(video_dir / "annotated.mp4"),
             "tracks": str(video_dir / "tracks.json"),
             "species": str(species_json),
             "crops": str(crop_root),
+            "evidence": evidence_uri,
         },
     }
     (output_dir / "pipeline.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
