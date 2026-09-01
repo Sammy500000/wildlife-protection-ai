@@ -11,6 +11,7 @@ import cv2
 from ml.pipeline.video import read_video
 from ml.species.speciesnet import SpeciesNetAdapter
 from ml.risk.engine import RiskInput, score_risk
+from ml.behavior.inference import BehaviorInference
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
@@ -82,7 +83,13 @@ def extract_track_crops(video: Path, tracks: list[dict[str, Any]], crop_root: Pa
     return dict(out)
 
 
-def run_integrated(video: Path, output_dir: Path, sample_every: int = 3, species_samples: int = 8) -> dict[str, Any]:
+def run_integrated(
+    video: Path,
+    output_dir: Path,
+    sample_every: int = 3,
+    species_samples: int = 8,
+    behavior_checkpoint: Path | None = None,
+) -> dict[str, Any]:
     from scripts.run_video import run_video
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -111,23 +118,46 @@ def run_integrated(video: Path, output_dir: Path, sample_every: int = 3, species
         species, confidence = _best_species(matching)
         track_species[tid] = {"species": species, "confidence": confidence, "sample_count": len(paths), "classified_count": len(matching)}
 
+    behavior = BehaviorInference(behavior_checkpoint) if behavior_checkpoint else None
     humans_present = any(r.get("class_name") == "person" for r in tracks)
     risk_events = []
     for tid, info in track_species.items():
+        behavior_result = behavior.predict(crops[tid]) if behavior and tid in crops else {
+            "behaviour": "UNKNOWN", "confidence": 0.0, "frames": len(crops.get(tid, []))
+        }
+        evidence_conf = min(float(info["confidence"]), float(behavior_result["confidence"]))
         risk = score_risk(RiskInput(
-            species=info["species"], behaviour="UNKNOWN", human_present=humans_present,
-            distance_m=None, persistence_s=0.0, confidence=float(info["confidence"]),
+            species=info["species"],
+            behaviour=behavior_result["behaviour"],
+            human_present=humans_present,
+            distance_m=None,
+            persistence_s=0.0,
+            detector_confidence=float(summary.get("detector_confidence", 1.0)),
+            behaviour_confidence=float(behavior_result["confidence"]),
+            confidence=evidence_conf,
         ))
         risk_events.append({
-            "risk_event_id": str(uuid.uuid4()), "track_id": tid,
-            "species": info["species"], "behaviour": "UNKNOWN",
-            "human_present": humans_present, "risk": risk, "evidence_uri": None,
+            "risk_event_id": str(uuid.uuid4()),
+            "track_id": tid,
+            "species": info["species"],
+            "behaviour": behavior_result["behaviour"],
+            "behaviour_confidence": behavior_result["confidence"],
+            "human_present": humans_present,
+            "risk": risk,
+            "evidence_uri": None,
         })
 
     result = {
-        "input": str(video), "summary": summary, "species": track_species,
+        "input": str(video),
+        "summary": summary,
+        "species": track_species,
         "risk_events": risk_events,
-        "models": {"detector": "MegaDetectorV6 MDV6-yolov9-c", "tracker": "ByteTrack", "species": "SpeciesNet 5.x", "behavior": "ResNet18-LSTM (not trained yet)"},
+        "models": {
+            "detector": "MegaDetectorV6 MDV6-yolov9-c",
+            "tracker": "ByteTrack",
+            "species": "SpeciesNet 5.x",
+            "behavior": behavior_checkpoint.name if behavior_checkpoint else "not trained",
+        },
         "outputs": {"tracks": str(video_dir / "tracks.json"), "species": str(species_json), "crops": str(crop_root)},
     }
     (output_dir / "pipeline.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
