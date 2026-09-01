@@ -17,6 +17,7 @@ class BehaviorInference:
             raise FileNotFoundError(f"Behaviour checkpoint not found: {self.checkpoint_path}")
         payload = torch.load(self.checkpoint_path, map_location=self.device)
         self.classes = payload.get("classes", CLASSES)
+        self.sequence_length = int(payload.get("sequence_length", 8))
         self.model = ResNetLSTM(num_classes=len(self.classes))
         state = payload.get("state_dict") or payload.get("model_state")
         if state is None:
@@ -31,10 +32,16 @@ class BehaviorInference:
 
     @torch.inference_mode()
     def predict(self, frame_paths: list[str | Path]) -> dict:
-        if not frame_paths:
-            return {"behaviour": "UNKNOWN", "confidence": 0.0, "frames": 0}
+        if len(frame_paths) < self.sequence_length:
+            return {
+                "behaviour": "UNKNOWN",
+                "confidence": 0.0,
+                "frames": len(frame_paths),
+                "reason": "insufficient_frames",
+            }
+        paths = frame_paths[: self.sequence_length]
         tensors = []
-        for path in frame_paths:
+        for path in paths:
             with Image.open(path) as image:
                 tensors.append(self.transform(image.convert("RGB")))
         x = torch.stack(tensors).unsqueeze(0).to(self.device)
@@ -43,6 +50,6 @@ class BehaviorInference:
         return {
             "behaviour": self.classes[idx],
             "confidence": float(probabilities[idx]),
-            "frames": len(frame_paths),
+            "frames": len(paths),
             "model_version": self.checkpoint_path.name,
         }
