@@ -4,7 +4,7 @@ AI-based wildlife video surveillance: detection → tracking → species → beh
 
 ## Architecture
 
-Camera/video → MegaDetector V6 → ByteTrack → SpeciesNet → ResNet18+LSTM → Risk Engine → Alert API → Next.js/Vercel Ranger Dashboard.
+Camera/video → MegaDetector V6 → ByteTrack → SpeciesNet + VideoMAE behaviour → Risk Engine → Alert API → Next.js/Vercel Ranger Dashboard.
 
 The ML worker runs separately from Vercel because video inference and model execution are not appropriate serverless workloads.
 
@@ -14,8 +14,10 @@ The ML worker runs separately from Vercel because video inference and model exec
 - SpeciesNet integration
 - Animal Kingdom annotation adapter
 - deterministic 8-frame sequence extraction and train/val/test split by clip
-- CPU ResNet18 + LSTM behaviour baseline
-- behaviour inference adapter
+- CPU ResNet18 + LSTM behaviour baseline (legacy)
+- VideoMAE cattle-behaviour checkpoint adapter for V1
+- per-track temporal crop → VideoMAE behaviour inference
+- stable wildlife behaviour ontology mapping
 - behaviour evaluation with macro-F1/confusion matrix
 - transparent risk scoring
 - event/alert orchestration and deduplication
@@ -69,7 +71,7 @@ python -m scripts.evaluate_behavior --manifest data/processed/animal_kingdom/tes
 Run the complete surveillance pipeline:
 
 \`\`\`powershell
-python -m scripts.run_pipeline --input data\\raw\\test_video\\test.mp4 --output-dir data\\outputs\\full_pipeline --behavior-checkpoint data\\models\\behavior\\resnet18_lstm.pt
+python -m scripts.run_pipeline --input data\\raw\\test_video\\test.mp4 --output-dir data\\outputs\\full_pipeline --behavior-checkpoint models\\behavior\\videomae\\videomae_combined_v1.pt
 \`\`\`
 
 ## Important research limitation
