@@ -1,0 +1,1 @@
+export default function Home(){return <main style={{padding:32,fontFamily:"system-ui"}}><h1>Wildlife Protection AI</h1><p>Ranger decision-support dashboard</p><p>Detection → Tracking → Species → Behaviour → Risk → Alert</p></main>}
