@@ -1,25 +1,37 @@
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 
 class SpeciesNetAdapter:
-    """Isolation boundary for Google Wildlife SpeciesNet.
+    """Adapter for Google's open-source SpeciesNet command-line runtime."""
 
-    SpeciesNet releases/runtime APIs can change; keeping integration here lets
-    the pipeline remain stable and makes the exact model version auditable.
-    """
+    def __init__(self, country: str = "IND"):
+        self.country = country
 
-    def __init__(self, model_path: str | None = None):
-        self.model_path = model_path
-        self._model: Any = None
+    @staticmethod
+    def check_installation() -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "speciesnet.scripts.run_model", "--help"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError("SpeciesNet is not installed. Run: python -m pip install speciesnet")
 
-    def load(self) -> None:
-        if not self.model_path:
-            raise RuntimeError("Set SPECIESNET_MODEL_PATH to the pinned SpeciesNet artifact/runtime.")
-        raise NotImplementedError("Connect the pinned SpeciesNet runtime in this adapter.")
-
-    def predict(self, crop: Any) -> dict[str, Any]:
-        if self._model is None:
-            raise RuntimeError("SpeciesNet is not loaded")
-        raise NotImplementedError
+    def classify_folder(self, image_folder: Path, output_json: Path) -> dict[str, Any]:
+        image_folder = image_folder.resolve()
+        output_json = output_json.resolve()
+        output_json.parent.mkdir(parents=True, exist_ok=True)
+        self.check_installation()
+        cmd = [sys.executable, "-m", "speciesnet.scripts.run_model", "--folders", str(image_folder), "--predictions_json", str(output_json)]
+        result = subprocess.run(cmd, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"SpeciesNet failed with exit code {result.returncode}")
+        if not output_json.exists():
+            raise RuntimeError(f"SpeciesNet completed but did not create {output_json}")
+        return json.loads(output_json.read_text(encoding="utf-8"))
