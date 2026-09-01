@@ -4,11 +4,7 @@ from typing import Any
 
 
 class ByteTrackAdapter:
-    """Detector-independent ByteTrack boundary.
-
-    Keeps tracking behind a stable interface so the detector can be replaced
-    without changing behaviour/risk code.
-    """
+    """Detector-independent ByteTrack adapter backed by Supervision."""
 
     def __init__(self, track_thresh: float = 0.25, track_buffer: int = 30, match_thresh: float = 0.8):
         self.track_thresh = track_thresh
@@ -29,5 +25,5 @@ class ByteTrackAdapter:
 
     def update(self, detections: Any) -> Any:
         if self._tracker is None:
-            raise RuntimeError("Tracker is not loaded")
+            self.load()
         return self._tracker.update_with_detections(detections)
