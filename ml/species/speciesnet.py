@@ -15,20 +15,34 @@ class SpeciesNetAdapter:
 
     @staticmethod
     def check_installation() -> None:
+        """Verify the public SpeciesNet CLI entry point, not a package import."""
         result = subprocess.run(
             [sys.executable, "-m", "speciesnet.scripts.run_model", "--help"],
             capture_output=True,
             text=True,
         )
         if result.returncode != 0:
-            raise RuntimeError("SpeciesNet is not installed. Run: python -m pip install speciesnet")
+            raise RuntimeError(
+                "SpeciesNet CLI is unavailable in this Python environment. "
+                "Verify with: python -m speciesnet.scripts.run_model --help"
+            )
 
     def classify_folder(self, image_folder: Path, output_json: Path) -> dict[str, Any]:
         image_folder = image_folder.resolve()
         output_json = output_json.resolve()
         output_json.parent.mkdir(parents=True, exist_ok=True)
         self.check_installation()
-        cmd = [sys.executable, "-m", "speciesnet.scripts.run_model", "--folders", str(image_folder), "--predictions_json", str(output_json)]
+        cmd = [
+            sys.executable,
+            "-m",
+            "speciesnet.scripts.run_model",
+            "--folders",
+            str(image_folder),
+            "--predictions_json",
+            str(output_json),
+            "--country",
+            self.country,
+        ]
         result = subprocess.run(cmd, text=True)
         if result.returncode != 0:
             raise RuntimeError(f"SpeciesNet failed with exit code {result.returncode}")
