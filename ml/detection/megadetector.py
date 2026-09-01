@@ -7,6 +7,7 @@ from typing import Any
 class DetectorConfig:
     confidence: float = 0.25
     device: str = "auto"
+    version: str = "MDV6-yolov9-c"
 
 class MegaDetectorAdapter:
     """MegaDetector V6 adapter using the official PyTorch-Wildlife API."""
@@ -23,7 +24,9 @@ class MegaDetectorAdapter:
         if device == "auto":
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = pw_detection.MegaDetectorV6(device=device)
+        self.model = pw_detection.MegaDetectorV6(
+            device=device, pretrained=True, version=self.config.version
+        )
 
     def predict(self, image_path: str) -> Any:
         if self.model is None:
