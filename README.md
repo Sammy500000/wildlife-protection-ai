@@ -1,83 +1,73 @@
 # Wildlife Protection AI
 
-AI-based wildlife video surveillance: detection → tracking → species → behaviour → conservation risk → ranger alerting.
+AI-based wildlife video surveillance: **detection → tracking → species → behaviour → conservation risk → ranger alerting**.
+
+## V1 local demonstration
+
+The fastest complete demonstration uses the already-tested CPU pipeline:
+
+**MegaDetector V6 → ByteTrack → SpeciesNet → VideoMAE → Risk Engine → Local Ranger Dashboard**
+
+The dashboard is intentionally local for the current review. ResNet18+LSTM, Animal Kingdom training, advanced research evaluation, PostgreSQL, cloud deployment and Vercel are future integrations.
+
+## Run the dashboard
+
+From the repository root with the project virtual environment activated:
+
+```powershell
+python -m pip install -r requirements.txt
+python -m scripts.run_dashboard
+```
+
+Open **http://127.0.0.1:8000**
+
+Upload a short wildlife MP4 and click **Analyze Video**.
+
+The browser dashboard shows:
+- processed evidence video
+- number of tracked animals
+- SpeciesNet species result
+- VideoMAE behaviour result
+- confidence
+- LOW/MEDIUM/HIGH/CRITICAL risk
+- human presence
+- risk factors
+- evidence frame
+
+The complete result is also written to `data/outputs/dashboard/<job_id>/pipeline.json`.
+
+## Existing command-line pipeline
+
+```powershell
+python -m scripts.run_pipeline --input data\raw\test_video\test.mp4 --output-dir data\outputs\full_pipeline --behavior-checkpoint models\behavior\videomae\videomae_combined_v1.pt
+```
 
 ## Architecture
 
-Camera/video → MegaDetector V6 → ByteTrack → SpeciesNet + VideoMAE behaviour → Risk Engine → Alert API → Next.js/Vercel Ranger Dashboard.
+```
+Video
+  ↓
+MegaDetector V6
+  ↓
+ByteTrack
+  ↓
+per-track crops
+  ├── SpeciesNet → species
+  └── VideoMAE → behaviour
+             ↓
+       Risk Engine
+             ↓
+      Ranger Dashboard
+```
 
-The ML worker runs separately from Vercel because video inference and model execution are not appropriate serverless workloads.
+## Research roadmap
 
-## Implemented
+The future research version can add Animal Kingdom transfer learning, ResNet18+LSTM comparison, Indian target-domain fine-tuning, camera/location holdout evaluation, calibration, PostgreSQL persistence and a separate inference worker.
 
-- MegaDetector V6 + ByteTrack video pipeline
-- SpeciesNet integration
-- Animal Kingdom annotation adapter
-- deterministic 8-frame sequence extraction and train/val/test split by clip
-- CPU ResNet18 + LSTM behaviour baseline (legacy)
-- VideoMAE cattle-behaviour checkpoint adapter for V1
-- per-track temporal crop → VideoMAE behaviour inference
-- stable wildlife behaviour ontology mapping
-- behaviour evaluation with macro-F1/confusion matrix
-- transparent risk scoring
-- event/alert orchestration and deduplication
-- FastAPI MVP
-- Next.js/Vercel ranger dashboard MVP
-- deployment scaffolding and reproducibility documentation
+## Important limitation
 
-## Current execution boundary
-
-The software architecture is now sufficiently complete for the first end-to-end research run. The remaining work that cannot be performed from the repository is execution against the actual local dataset/model environment:
-
-1. Download/obtain the Animal Kingdom action-recognition data under its current access/licensing terms.
-2. Run the sequence preparation script.
-3. Train the CPU ResNet18+LSTM model.
-4. Evaluate it on the frozen test manifest.
-5. Run the integrated video pipeline with the trained checkpoint.
-6. Inspect failures and refine the source-to-project behaviour mapping.
-7. Run the final research ablations and target-domain evaluation.
-8. Deploy the web dashboard to Vercel and host the inference/API worker separately.
-
-## Behaviour dataset
-
-See \`docs/BEHAVIOR_DATASET_ANIMAL_KINGDOM.md\`.
-
-## First execution
-
-From the activated project virtual environment:
-
-\`\`\`powershell
-python -m scripts.prepare_animal_kingdom --annotations <PATH_TO_ACTION_CSV> --video-root <PATH_TO_ACTION_VIDEOS> --output data/processed/animal_kingdom/manifest.json --sequence-length 8
-\`\`\`
-
-Then inspect:
-
-\`\`\`powershell
-type data\\processed\\animal_kingdom\\manifest_summary.json
-\`\`\`
-
-Train:
-
-\`\`\`powershell
-python -m scripts.train_behavior_lstm --train data/processed/animal_kingdom/train.json --val data/processed/animal_kingdom/val.json --output data/models/behavior/resnet18_lstm.pt --epochs 5 --batch-size 2
-\`\`\`
-
-Evaluate:
-
-\`\`\`powershell
-python -m scripts.evaluate_behavior --manifest data/processed/animal_kingdom/test.json --checkpoint data/models/behavior/resnet18_lstm.pt
-\`\`\`
-
-Run the complete surveillance pipeline:
-
-\`\`\`powershell
-python -m scripts.run_pipeline --input data\\raw\\test_video\\test.mp4 --output-dir data\\outputs\\full_pipeline --behavior-checkpoint models\\behavior\\videomae\\videomae_combined_v1.pt
-\`\`\`
-
-## Important research limitation
-
-Animal Kingdom is not an India-specific conservation-risk dataset. Its behaviour labels are multi-label and are mapped into the project's smaller ontology for the baseline. Animal Kingdom performance must not be presented as Indian-wildlife performance. Target-domain validation and ranger-reviewed scenarios are required before making conservation claims.
+The V1 VideoMAE checkpoint is a pretrained demonstration model and its behaviour labels should not be presented as scientifically validated Indian-wildlife behaviour recognition. Risk is decision support for a human ranger, not an autonomous enforcement decision.
 
 ## Deployment decision
 
-GitHub is the source of truth. The Next.js dashboard is intended for Vercel deployment. The Python inference/ML worker is intentionally separate and should run on a machine/server capable of sustained video inference. Vercel should serve the UI/API edge layer, not the heavy video model runtime.
+GitHub remains the source of truth. Vercel can host a future lightweight web frontend, while heavy Python video inference should run separately on a machine/server capable of sustained model execution.
