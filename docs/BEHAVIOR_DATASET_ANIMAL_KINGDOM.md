@@ -1,21 +1,31 @@
 # Behaviour Dataset: Animal Kingdom
 
 ## Decision
-Animal Kingdom is the primary external dataset for the first behaviour-modeling stage. The official repository is https://github.com/sutdcv/Animal-Kingdom. The CVPR 2022 paper reports 30K video sequences for fine-grained multi-label action recognition, 50 hours of behaviour-grounded video and 33K pose frames across 850 species and six major animal classes.
+Animal Kingdom is the primary external dataset for the first behaviour-modeling stage. The official repository reports 30K video sequences for fine-grained multi-label action recognition, 50 hours of behaviour-grounded video and 33K pose frames across 850 species and six major animal classes. The action-recognition annotations use a Charades-style CSV with clip_id, clip_number, frame_number, clip_path and action_labels.
 
-## Important modeling decision
-Animal Kingdom uses multi-label action recognition. Our production ontology is intentionally smaller: RESTING, NORMAL_MOVEMENT, RUNNING, CHASING, AGGRESSIVE_ABNORMAL, UNKNOWN. Therefore the training adapter must preserve the original Animal Kingdom action labels and provide an explicit mapping layer rather than pretending the source labels are identical to our conservation ontology.
+## Project adaptation
+The project baseline uses a smaller single-label ontology:
+- RESTING
+- NORMAL_MOVEMENT
+- RUNNING
+- CHASING
+- AGGRESSIVE_ABNORMAL
+- UNKNOWN
 
-## Lowest-effort path
-1. Download only the action-recognition portion initially; do not download the full ~80GB distribution until required.
-2. Parse the official Charades-format CSV annotations (clip_id, clip_number, frame_number, clip_path, action_labels).
-3. Build a local manifest containing sequence frame paths, original multi-label actions, source split and source clip ID.
-4. Train a multi-label source-domain baseline first, then create the project ontology mapping for transfer learning.
-5. Keep source-domain test clips separate from Indian/target-domain evaluation clips.
-6. Fine-tune the ResNet18+LSTM model on any permitted Indian-labelled clips later; do not claim Animal Kingdom performance as Indian-wildlife performance.
+The adapter preserves source action labels and applies an explicit deterministic keyword-priority mapping. This is an engineering transfer baseline, not a claim that the source taxonomy is equivalent to the project's conservation taxonomy. The mapping must be inspected and refined before reporting research results.
+
+## Lowest-effort execution path
+1. Obtain the Animal Kingdom action-recognition dataset and annotations under the dataset's current access/licensing terms.
+2. Point the project at the action-recognition annotation CSV and extracted video directory.
+3. Run scripts/prepare_animal_kingdom.py to extract fixed 8-frame sequences and create deterministic train/val/test manifests grouped by clip_id.
+4. Inspect data/processed/animal_kingdom/manifest_summary.json and verify that the mapped classes have enough samples.
+5. Train the CPU ResNet18+LSTM baseline with scripts/train_behavior_lstm.py.
+6. Evaluate the frozen test manifest with scripts/evaluate_behavior.py.
+7. Only after the model passes evaluation, run scripts/run_pipeline.py with --behavior-checkpoint to connect behaviour to the existing detection → tracking → SpeciesNet → risk path.
+8. Keep Animal Kingdom metrics separate from any Indian/target-domain evaluation.
 
 ## Reproducibility
-Record dataset version/download date, source URL, annotation checksum, generated manifest checksum and exact action-label mapping in every experiment.
+Record dataset version/download date, annotation checksum, generated manifest checksum, mapping version, code commit, random seed, model checkpoint and evaluation metrics.
 
 ## Citation
 Ng, Xun Long, et al. “Animal Kingdom: A Large and Diverse Dataset for Animal Behavior Understanding.” CVPR 2022, pp. 19023–19034.
