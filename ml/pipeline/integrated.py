@@ -94,7 +94,7 @@ def run_integrated(
     sample_every: int = 3,
     species_samples: int = 8,
     behavior_checkpoint: Path | None = None,
-    kabr_python: str | Path | None = None,
+    behavior_checkpoint: str | Path = "models/behavior/videomae/videomae_combined_v1.pt",
 ) -> dict[str, Any]:
     from scripts.run_video import run_video
 
@@ -133,26 +133,25 @@ def run_integrated(
             "classified_count": len(matching),
         }
 
-    kabr = None
-    if kabr_python:
-        from ml.behavior.kabr import KABRBehaviorInference
-        kabr = KABRBehaviorInference(kabr_python)
-        kabr.check_installation()
-
+    from ml.behavior import BehaviorMapper, VideoMAEBehaviorClassifier
+    behavior_model = VideoMAEBehaviorClassifier(behavior_checkpoint, device="cpu")
     humans_present = any(r.get("class_name") == "person" for r in tracks)
     risk_events = []
     behavior_results: dict[str, dict[str, Any]] = {}
 
     for tid, info in track_species.items():
-        if kabr and tid in crops:
-            behavior_result = kabr.predict(crops[tid], output_dir / "behavior", tid)
+        if tid in crops and len(crops[tid]) > 0:
+            behavior_result = BehaviorMapper.enrich(
+                behavior_model.predict_paths(crops[tid])
+            )
         else:
             behavior_result = {
-                "behaviour": "UNKNOWN",
+                "behaviour": "Other",
+                "behavior_class": "UNKNOWN",
                 "confidence": 0.0,
-                "frames": len(crops.get(tid, [])),
-                "model_version": "not configured",
-                "reason": "kabr_python_not_configured",
+                "frames": 0,
+                "model_version": "VideoMAE-CattleVision-v1",
+                "reason": "no_track_crops",
             }
         behavior_results[tid] = behavior_result
 
@@ -188,7 +187,7 @@ def run_integrated(
             "detector": "MegaDetectorV6 MDV6-yolov9-c",
             "tracker": "ByteTrack",
             "species": "SpeciesNet 5.x",
-            "behavior": "X3D-KABR-Kinetics" if kabr else "not configured",
+            "behavior": "VideoMAE-CattleVision-v1",
         },
         "outputs": {
             "tracks": str(video_dir / "tracks.json"),
