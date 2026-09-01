@@ -104,7 +104,7 @@ def run_integrated(
     tracks = json.loads((video_dir / "tracks.json").read_text(encoding="utf-8")).get("tracks", [])
 
     crop_root = output_dir / "track_crops"
-    crops = extract_track_crops(video, tracks, crop_root, per_track=max(16, species_samples))
+    crops = extract_track_crops(video, tracks, crop_root, per_track=max(80, species_samples))
 
     species_root = output_dir / "species"
     species_root.mkdir(parents=True, exist_ok=True)
