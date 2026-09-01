@@ -28,25 +28,38 @@ CLASSES = {
 
 def get_csv(name: str, cache: Path) -> Path:
     cache.mkdir(parents=True, exist_ok=True)
-    return Path(hf_hub_download(
-        repo_id=REPO_ID,
-        filename=f"{ANNOTATION_ROOT}/{name}",
-        repo_type=REPO_TYPE,
-        local_dir=cache,
-    ))
+    return Path(
+        hf_hub_download(
+            repo_id=REPO_ID,
+            filename=f"{ANNOTATION_ROOT}/{name}",
+            repo_type=REPO_TYPE,
+            local_dir=cache,
+        )
+    )
+
+
+def read_kabr_csv(path: Path) -> pd.DataFrame:
+    # KABR annotation files use whitespace as the field separator even though
+    # they have a .csv extension.
+    df = pd.read_csv(path, sep=r"\s+", engine="python")
+    if len(df.columns) == 1:
+        df = pd.read_csv(path, sep=None, engine="python")
+    return df
 
 
 def load_annotations(cache: Path):
-    train = pd.read_csv(get_csv("train.csv", cache))
-    val = pd.read_csv(get_csv("val.csv", cache))
-    required = {"original_video_id", "video_id", "frame_id", "path", "labels"}
+    train = read_kabr_csv(get_csv("train.csv", cache))
+    val = read_kabr_csv(get_csv("val.csv", cache))
+
+    required = {"original_vido_id", "video_id", "frame_id", "path", "labels"}
     for df in (train, val):
-        if "original_vido_id" in df.columns and "original_video_id" not in df.columns:
-            df.rename(columns={"original_vido_id": "original_video_id"}, inplace=True)
+        if "original_video_id" in df.columns and "original_vido_id" not in df.columns:
+            df.rename(columns={"original_video_id": "original_vido_id"}, inplace=True)
         missing = required - set(df.columns)
         if missing:
             raise RuntimeError(
-                f"Unexpected KABR CSV schema. Missing {sorted(missing)}; columns={list(df.columns)}"
+                f"Unexpected KABR CSV schema. Missing {sorted(missing)}; "
+                f"columns={list(df.columns)}"
             )
     return train, val
 
@@ -140,19 +153,27 @@ def write_manifest(items, output_dir: Path):
         "sequence_length": len(items[0]["frames"]) if items else 0,
         "items": items,
     }
-    (output_dir / "manifest.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    (output_dir / "classes.json").write_text(json.dumps(CLASSES, indent=2), encoding="utf-8")
+    (output_dir / "manifest.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
+    (output_dir / "classes.json").write_text(
+        json.dumps(CLASSES, indent=2), encoding="utf-8"
+    )
     summary = {
         "sequences": len(items),
         "frames": sum(len(x["frames"]) for x in items),
         "class_counts": dict(Counter(x["label"] for x in items)),
     }
-    (output_dir / "manifest_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    (output_dir / "manifest_summary.json").write_text(
+        json.dumps(summary, indent=2), encoding="utf-8"
+    )
     return summary
 
 
 def main():
-    p = argparse.ArgumentParser(description="Create a tiny KABR behavior pilot from official ML-ready annotations.")
+    p = argparse.ArgumentParser(
+        description="Create a tiny KABR behavior pilot from official ML-ready annotations."
+    )
     p.add_argument("--per-class", type=int, default=1)
     p.add_argument("--sequence-length", type=int, default=8)
     p.add_argument("--output", default="data/raw/kabr")
@@ -167,8 +188,13 @@ def main():
     print(f"  val rows:   {len(val):,}")
 
     print("[2/4] Selecting balanced temporal sequences...")
-    train_items = select_sequences(train, args.per_class, args.sequence_length, args.seed)
-    val_items = select_sequences(val, max(1, args.per_class // 2), args.sequence_length, args.seed + 1)
+    train_items = select_sequences(
+        train, args.per_class, args.sequence_length, args.seed
+    )
+    val_items = select_sequences(
+        val, max(1, args.per_class // 2),
+        args.sequence_length, args.seed + 1
+    )
 
     train_counts = Counter(x["label"] for x in train_items)
     print("  train:", dict(train_counts))
@@ -192,7 +218,9 @@ def main():
         "train": str((output / "train" / "manifest.json").resolve()),
         "val": str((output / "val" / "manifest.json").resolve()),
     }
-    (output / "dataset_manifest.json").write_text(json.dumps(combined, indent=2), encoding="utf-8")
+    (output / "dataset_manifest.json").write_text(
+        json.dumps(combined, indent=2), encoding="utf-8"
+    )
 
     print("\nKABR_DOWNLOAD_OK")
     print(json.dumps({"train": train_summary, "val": val_summary}, indent=2))
