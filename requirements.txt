@@ -14,3 +14,7 @@ setuptools==80.9.0
 wheel>=0.44,<1
 PytorchWildlife>=2,<3
 supervision>=0.25,<0.30
+transformers>=4.45,<5
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+python-multipart>=0.0.9,<1
