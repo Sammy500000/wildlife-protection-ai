@@ -1,226 +1,229 @@
 from __future__ import annotations
 
 import argparse
-import concurrent.futures as cf
-import csv
-import re
-import xml.etree.ElementTree as ET
+import json
+import random
 from collections import Counter
 from pathlib import Path
 
-from huggingface_hub import HfApi, hf_hub_download
+import pandas as pd
+from huggingface_hub import hf_hub_download
 
-REPO_ID = "imageomics/KABR-mini-scene-raw-videos"
+REPO_ID = "imageomics/KABR"
 REPO_TYPE = "dataset"
+ANNOTATION_ROOT = "KABR/annotation"
+IMAGE_ROOT = "KABR/dataset/image"
 
-BEHAVIORS = [
-    "Walk",
-    "Trot",
-    "Run",
-    "Graze",
-    "Browse",
-    "Head Up",
-    "Auto-Groom",
-    "Occluded",
-]
-
-VIDEO_RE = re.compile(r"^(\d+)\.mp4$", re.IGNORECASE)
-
-
-def parse_behavior(xml_file: Path) -> str | None:
-    try:
-        root = ET.parse(xml_file).getroot()
-    except (ET.ParseError, OSError):
-        return None
-
-    counts: Counter[str] = Counter()
-    for attr in root.iter("attribute"):
-        if attr.attrib.get("name", "").strip().lower() == "behavior":
-            value = (attr.text or "").strip()
-            for label in BEHAVIORS:
-                if value.lower() == label.lower():
-                    counts[label] += 1
-
-    return counts.most_common(1)[0][0] if counts else None
+DEFAULT_CLASSES = {
+    "Walk": 0,
+    "Graze": 1,
+    "Browse": 2,
+    "Head Up": 3,
+    "Auto-Groom": 4,
+    "Trot": 5,
+    "Run": 6,
+    "Occluded": 7,
+}
 
 
-def discover_pairs():
-    api = HfApi()
-    entries = list(
-        api.list_repo_tree(
+def download_annotation(filename: str, cache_dir: Path) -> Path:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return Path(
+        hf_hub_download(
             repo_id=REPO_ID,
+            filename=f"{ANNOTATION_ROOT}/{filename}",
             repo_type=REPO_TYPE,
-            recursive=True,
+            local_dir=cache_dir,
         )
     )
 
-    action_paths = {
-        item.path
-        for item in entries
-        if "/actions/" in item.path
-        and item.path.lower().endswith(".xml")
-    }
-    video_paths = {
-        item.path
-        for item in entries
-        if item.path.lower().endswith(".mp4")
-        and VIDEO_RE.match(Path(item.path).name)
-    }
 
-    pairs = []
-    for action in sorted(action_paths):
-        stem = Path(action).stem
-        parent = Path(action).parent.parent.as_posix()
-        video = f"{parent}/{stem}.mp4"
-        if video in video_paths:
-            pairs.append((video, action))
-
-    return pairs
-
-
-def scan_one(pair, cache_dir: Path):
-    video_path, action_path = pair
-    local = hf_hub_download(
-        repo_id=REPO_ID,
-        filename=action_path,
-        repo_type=REPO_TYPE,
-        local_dir=cache_dir,
-    )
-    return video_path, action_path, parse_behavior(Path(local))
-
-
-def scan_annotations(pairs, cache_dir: Path, workers: int):
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    records = []
-
-    with cf.ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(scan_one, pair, cache_dir): pair
-            for pair in pairs
-        }
-        for i, future in enumerate(cf.as_completed(futures), 1):
-            try:
-                video, action, behavior = future.result()
-                if behavior:
-                    records.append(
-                        {
-                            "video": video,
-                            "annotation": action,
-                            "behavior": behavior,
-                        }
-                    )
-            except Exception as exc:
-                pair = futures[future]
-                print(f"[WARN] {pair[1]}: {exc}")
-
-            if i % 50 == 0 or i == len(futures):
-                print(f"  scanned {i}/{len(futures)} annotations")
-
-    return records
-
-
-def select_balanced(records, per_class):
-    selected = []
-    counts = Counter()
-
-    # Deterministic ordering keeps repeated runs reproducible.
-    for record in sorted(records, key=lambda x: (x["behavior"], x["video"])):
-        label = record["behavior"]
-        if counts[label] < per_class:
-            selected.append(record)
-            counts[label] += 1
-
-    print("\nAvailable / selected:")
-    for label in BEHAVIORS:
-        print(f"  {label:12s} {sum(r['behavior'] == label for r in records):4d} / {counts[label]:3d}")
-
-    missing = [label for label in BEHAVIORS if counts[label] < per_class]
+def read_annotation(path: Path) -> pd.DataFrame:
+    try:
+        df = pd.read_csv(path, sep=r"\s+", engine="python")
+    except Exception:
+        df = pd.read_csv(path)
+    required = {"original_vido_id", "video_id", "frame_id", "path", "labels"}
+    missing = required - set(df.columns)
     if missing:
-        print("\n[WARN] Not enough examples for: " + ", ".join(missing))
+        raise RuntimeError(
+            f"Unexpected KABR annotation format. Missing {sorted(missing)}; "
+            f"found {list(df.columns)}"
+        )
+    return df
 
+
+def select_sequences(df, classes, per_class, sequence_length, seed):
+    rng = random.Random(seed)
+    id_to_label = {int(v): k for k, v in classes.items()}
+    df = df.copy()
+    df["label_id"] = pd.to_numeric(df["labels"], errors="coerce")
+    df = df[df["label_id"].isin(id_to_label)].copy()
+
+    candidates = []
+    for (source_id, video_id), group in df.groupby(
+        ["original_vido_id", "video_id"], sort=True
+    ):
+        group = group.sort_values("frame_id")
+        counts = Counter(group["label_id"].astype(int).tolist())
+        if not counts:
+            continue
+        dominant_id, dominant_count = counts.most_common(1)[0]
+        purity = dominant_count / len(group)
+        if len(group) < sequence_length or purity < 0.90:
+            continue
+        candidates.append(
+            {
+                "source_id": str(source_id),
+                "video_id": int(video_id),
+                "label": id_to_label[dominant_id],
+                "label_id": int(dominant_id),
+                "purity": round(purity, 4),
+                "frames": group,
+            }
+        )
+
+    by_label = {name: [] for name in classes}
+    for item in candidates:
+        by_label[item["label"]].append(item)
+
+    selected = []
+    for label in classes:
+        pool = by_label.get(label, [])
+        rng.shuffle(pool)
+        for item in pool[:per_class]:
+            frames = item["frames"]
+            indices = [
+                round(i * (len(frames) - 1) / (sequence_length - 1))
+                for i in range(sequence_length)
+            ]
+            sampled = frames.iloc[indices]
+            selected.append(
+                {
+                    "sequence_id": f"{item['source_id']}_{item['video_id']}",
+                    "source_id": item["source_id"],
+                    "video_id": item["video_id"],
+                    "label": item["label"],
+                    "label_id": item["label_id"],
+                    "purity": item["purity"],
+                    "frames": sampled["path"].tolist(),
+                }
+            )
     return selected
 
 
-def download_selected(records, output_dir: Path, workers: int):
+def download_sequence_images(items, output_dir):
+    downloaded = []
+    for seq in items:
+        seq_dir = output_dir / "frames" / seq["sequence_id"]
+        seq_dir.mkdir(parents=True, exist_ok=True)
+        local_frames = []
+        for n, dataset_path in enumerate(seq["frames"]):
+            target = seq_dir / f"{n:03d}.jpg"
+            if not target.exists():
+                source = hf_hub_download(
+                    repo_id=REPO_ID,
+                    filename=f"{IMAGE_ROOT}/{dataset_path}",
+                    repo_type=REPO_TYPE,
+                    local_dir=output_dir / "_hf_cache",
+                )
+                target.write_bytes(Path(source).read_bytes())
+            local_frames.append(str(target.resolve()))
+        downloaded.append({**seq, "frames": local_frames})
+        print(f"  downloaded {seq['label']}: {seq['sequence_id']}")
+    return downloaded
+
+
+def write_manifest(items, classes, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    def download_one(record):
-        video_local = hf_hub_download(
-            repo_id=REPO_ID,
-            filename=record["video"],
-            repo_type=REPO_TYPE,
-            local_dir=output_dir,
-        )
-        xml_local = hf_hub_download(
-            repo_id=REPO_ID,
-            filename=record["annotation"],
-            repo_type=REPO_TYPE,
-            local_dir=output_dir,
-        )
-        return record, video_local, xml_local
-
-    rows = []
-    with cf.ThreadPoolExecutor(max_workers=min(workers, 8)) as executor:
-        futures = [executor.submit(download_one, r) for r in records]
-        for i, future in enumerate(cf.as_completed(futures), 1):
-            record, video_local, xml_local = future.result()
-            rows.append(
-                {
-                    "video": str(Path(video_local).relative_to(output_dir)),
-                    "annotation": str(Path(xml_local).relative_to(output_dir)),
-                    "label": record["behavior"],
-                    "source_video": record["video"],
-                    "source_annotation": record["annotation"],
-                }
-            )
-            print(f"  downloaded {i}/{len(futures)}: {record['behavior']}")
-
-    manifest = output_dir / "kabr_manifest.csv"
-    with manifest.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=[
-                "video",
-                "annotation",
-                "label",
-                "source_video",
-                "source_annotation",
-            ],
-        )
-        writer.writeheader()
-        writer.writerows(sorted(rows, key=lambda x: (x["label"], x["video"])))
-
-    return manifest
+    payload = {
+        "dataset": "KABR",
+        "source": REPO_ID,
+        "sequence_length": len(items[0]["frames"]) if items else 0,
+        "classes": classes,
+        "items": items,
+    }
+    (output_dir / "manifest.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
+    (output_dir / "classes.json").write_text(
+        json.dumps(classes, indent=2), encoding="utf-8"
+    )
+    summary = {
+        "dataset": "KABR",
+        "sequences": len(items),
+        "frames": sum(len(x["frames"]) for x in items),
+        "class_counts": dict(Counter(x["label"] for x in items)),
+        "classes": classes,
+    }
+    (output_dir / "manifest_summary.json").write_text(
+        json.dumps(summary, indent=2), encoding="utf-8"
+    )
+    return summary
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Download a small balanced KABR mini-scene subset without downloading full drone videos."
+        description="Download a tiny balanced KABR subset using annotations and selected frames only."
     )
-    parser.add_argument("--per-class", type=int, default=3)
-    parser.add_argument("--workers", type=int, default=16)
+    parser.add_argument("--sequences-per-class", type=int, default=3)
+    parser.add_argument("--sequence-length", type=int, default=8)
     parser.add_argument("--output", default="data/raw/kabr")
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     output = Path(args.output)
+    annotations = output / "_annotations"
 
-    print("[1/3] Discovering KABR mini-scene video/XML pairs...")
-    pairs = discover_pairs()
-    print(f"Discovered {len(pairs)} candidate pairs.")
+    print("[1/4] Downloading small KABR annotation files...")
+    train_path = download_annotation("train.csv", annotations)
+    val_path = download_annotation("val.csv", annotations)
+    try:
+        classes_path = download_annotation("classes.json", annotations)
+        classes = json.loads(classes_path.read_text(encoding="utf-8"))
+    except Exception:
+        classes = DEFAULT_CLASSES
 
-    print(f"[2/3] Concurrently scanning XML annotations ({args.workers} workers)...")
-    records = scan_annotations(pairs, output / "_annotation_cache", args.workers)
-    selected = select_balanced(records, args.per_class)
+    print("[2/4] Reading frame annotations...")
+    train = read_annotation(train_path)
+    val = read_annotation(val_path)
+    print(f"  train rows: {len(train):,}")
+    print(f"  val rows:   {len(val):,}")
+    print(f"  classes: {classes}")
 
-    if not selected:
-        raise RuntimeError("No labelled KABR mini-scenes were found.")
+    print("[3/4] Selecting balanced temporal sequences...")
+    train_items = select_sequences(
+        train, classes, args.sequences_per_class, args.sequence_length, args.seed
+    )
+    val_items = select_sequences(
+        val, classes, max(1, args.sequences_per_class // 2),
+        args.sequence_length, args.seed + 1
+    )
+    print(f"  selected train: {len(train_items)}")
+    print(f"  selected val:   {len(val_items)}")
 
-    print(f"\n[3/3] Downloading {len(selected)} selected MP4/XML pairs...")
-    manifest = download_selected(selected, output, args.workers)
+    if not train_items:
+        raise RuntimeError("No suitable KABR training sequences were found.")
+
+    print("[4/4] Downloading only selected image frames...")
+    train_local = download_sequence_images(train_items, output / "train")
+    val_local = download_sequence_images(val_items, output / "val")
+
+    train_summary = write_manifest(train_local, classes, output / "train")
+    val_summary = write_manifest(val_local, classes, output / "val")
+
+    combined = {
+        "dataset": "KABR",
+        "classes": classes,
+        "train": str((output / "train" / "manifest.json").resolve()),
+        "val": str((output / "val" / "manifest.json").resolve()),
+    }
+    (output / "dataset_manifest.json").write_text(
+        json.dumps(combined, indent=2), encoding="utf-8"
+    )
 
     print("\nKABR_DOWNLOAD_OK")
-    print(f"Selected clips: {len(selected)}")
-    print(f"Manifest: {manifest}")
+    print(json.dumps({"train": train_summary, "val": val_summary}, indent=2))
 
 
 if __name__ == "__main__":
